@@ -359,22 +359,41 @@
     build();
     setupTitle();
     startEl.classList.remove('show');
-    t0 = performance.now() - startOffset * 1000;
-    if (hasMusic) {
-      music.currentTime = MUSIC_OFFSET + startOffset;
-      return music.play();
+    if (!hasMusic) {
+      t0 = performance.now() - startOffset * 1000;
+      return Promise.resolve();
     }
-    return Promise.resolve();
+    // пыль ждёт, пока трек реально заиграет (по сети он может догружаться) — так звук не отстаёт
+    t0 = performance.now() + 3.6e6;
+    music.currentTime = MUSIC_OFFSET + startOffset;
+    return music.play().then(() => { t0 = performance.now() - startOffset * 1000; });
   }
 
-  // есть ли рядом music.mp3: ждём, пока аудио загрузится или сообщит об ошибке
-  function detectMusic() {
+  // есть ли рядом music.mp3
+  async function detectMusic() {
+    // на сайте (GitHub Pages и т.п.) просто спрашиваем сервер — не зависит от скорости загрузки
+    if (location.protocol.startsWith('http')) {
+      try {
+        const res = await fetch(music.currentSrc || music.src, { method: 'HEAD', cache: 'no-store' });
+        return res.ok;
+      } catch (e) { /* ниже проверим через сам <audio> */ }
+    }
     return new Promise(resolve => {
-      if (music.readyState >= 3) return resolve(true);
-      music.addEventListener('canplaythrough', () => resolve(true), { once: true });
+      if (music.error) return resolve(false);
+      if (music.readyState >= 1) return resolve(true);
+      music.addEventListener('loadedmetadata', () => resolve(true), { once: true });
       music.addEventListener('error', () => resolve(false), { once: true });
-      setTimeout(() => resolve(music.readyState >= 2), 2500);
+      // iPhone не грузит аудио до касания — если ошибки нет, считаем, что трек есть
+      setTimeout(() => resolve(!music.error), 4000);
     });
+  }
+
+  // play() не удался: либо браузер ждёт касания, либо файл не играется — тогда без звука
+  function onPlayFailed(err) {
+    if (err && err.name === 'NotAllowedError') return startEl.classList.add('show');
+    console.warn('music.mp3 не воспроизводится, запускаю без звука:', err);
+    hasMusic = false;
+    restart();
   }
 
   // ───────────── старт ─────────────
@@ -390,16 +409,14 @@
     requestAnimationFrame(frame);
 
     hasMusic = await detectMusic();
+    if (!hasMusic) console.info('music.mp3 не найден рядом со страницей — анимация без звука');
     // автозапуск со звуком браузер может запретить — тогда ждём одно нажатие
-    restart().catch(() => {
-      t0 = performance.now() + 3.6e6;
-      startEl.classList.add('show');
-    });
+    restart().catch(onPlayFailed);
   };
   img.src = window.PHOTO_SRC;
 
   addEventListener('resize', resize);
-  addEventListener('click', () => { if (targets) restart().catch(() => {}); });
+  addEventListener('click', () => { if (targets) restart().catch(onPlayFailed); });
 })();
 </script>
 </body>
